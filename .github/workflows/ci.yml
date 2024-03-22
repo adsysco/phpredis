@@ -74,6 +74,10 @@ jobs:
       fail-fast: false
       matrix:
         php: ['7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3']
+        server: ['Redis']
+        include:
+          - php: '8.2'
+            server: 'KeyDB'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -88,11 +92,23 @@ jobs:
           tools: none
       - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt --fix-broken install
+          sudo apt-get install valgrind libzstd-dev liblz4-dev
+      - name: Install Redis
+        if: ${{ matrix.server == 'Redis' }}
+        run: |
           curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list
           sudo apt-get update
-          sudo apt --fix-broken install
-          sudo apt-get install redis valgrind libzstd-dev liblz4-dev
+          sudo apt-get install redis
+      - name: Install KeyDB
+        if: ${{ matrix.server == 'KeyDB' }}
+        run: |
+          curl -fsSL https://download.keydb.dev/open-source-dist/keyring.gpg | sudo gpg --dearmor -o /usr/share/keyrings/keydb-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/keydb-archive-keyring.gpg] https://download.keydb.dev/open-source-dist $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/keydb.list
+          sudo apt-get update
+          sudo apt-get install keydb
       - name: Build phpredis
         run: |
           phpize
@@ -100,6 +116,7 @@ jobs:
           sudo make -j"$(nproc)" install
           echo 'extension = redis.so' | sudo tee -a "$(php --ini | grep 'Scan for additional .ini files' | awk '{print $7}')"/90-redis.ini
       - name: Start redis
+        if: ${{ matrix.server == 'Redis' }}
         run: |
           redis-cli SHUTDOWN NOSAVE
           for PORT in $(seq 6379 6382) $(seq 32767 32769); do
@@ -107,6 +124,7 @@ jobs:
           done
           redis-server --port 0 --unixsocket /tmp/redis.sock --daemonize yes --aclfile tests/users.acl --acl-pubsub-default allchannels
       - name: Start redis cluster
+        if: ${{ matrix.server == 'Redis' }}
         run: |
           mkdir -p tests/nodes
           echo -n > tests/nodes/nodemap
@@ -116,6 +134,7 @@ jobs:
           done
           echo yes | redis-cli --cluster create $(seq -f 127.0.0.1:%g 7000 7005) --cluster-replicas 1 --user phpredis -a phpredis
       - name: Start redis sentinel
+        if: ${{ matrix.server == 'Redis' }}
         run: |
           wget raw.githubusercontent.com/redis/redis/7.0/sentinel.conf
           for PORT in $(seq 26379 26380); do
@@ -123,7 +142,16 @@ jobs:
             sed -i '/^sentinel/Id' "$PORT.conf"
             redis-server "$PORT.conf" --port "$PORT" --daemonize yes --sentinel monitor mymaster 127.0.0.1 6379 1 --sentinel auth-pass mymaster phpredis
           done
+      - name: Start keydb
+        if: ${{ matrix.server == 'KeyDB' }}
+        run: |
+          keydb-cli SHUTDOWN NOSAVE
+          for PORT in $(seq 6379 6382) $(seq 32767 32769); do
+            keydb-server --port "$PORT" --daemonize yes --aclfile tests/users.acl --acl-pubsub-default allchannels
+          done
+          keydb-server --port 0 --unixsocket /tmp/redis.sock --daemonize yes --aclfile tests/users.acl --acl-pubsub-default allchannels
       - name: Run tests
+        if: ${{ matrix.server == 'Redis' }}
         run: |
           php tests/TestRedis.php --class Redis --user phpredis --auth phpredis
           php tests/TestRedis.php --class RedisArray --user phpredis --auth phpredis
@@ -132,6 +160,7 @@ jobs:
         env:
           TEST_PHP_ARGS: -e
       - name: Run tests using valgrind
+        if: ${{ matrix.server == 'Redis' }}
         continue-on-error: true
         run: |
           valgrind --suppressions=tests/vg.supp --error-exitcode=1 php tests/TestRedis.php --class Redis --user phpredis --auth phpredis
