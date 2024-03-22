@@ -4395,3 +4395,4 @@ None
 
 ### *Return value*
 *Mixed*  Returns NULL if no username/password are set, the password string if a password is set, and a `[username, password]` array if authenticated with a username and password.
+
